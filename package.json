@@ -1,0 +1,42 @@
+{
+  "name": "review-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev --host 0.0.0.0 --port 3000",
+    "dev:https": "nuxt dev --host 0.0.0.0 --port 3000 --https --https.domains localhost,127.0.0.1",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "nuxt typecheck"
+  },
+  "dependencies": {
+    "@iconify-json/lucide": "^1.2.98",
+    "@iconify-json/simple-icons": "^1.2.74",
+    "@internationalized/date": "^3.12.0",
+    "@nuxt/ui": "^4.5.1",
+    "@tanstack/table-core": "^8.21.3",
+    "@unovis/ts": "^1.6.4",
+    "@unovis/vue": "^1.6.4",
+    "@vueuse/core": "^14.2.1",
+    "@vueuse/nuxt": "^14.2.1",
+    "csv-parse": "^5.5.6",
+    "date-fns": "^4.1.0",
+    "gray-matter": "^4.0.3",
+    "markdown-it": "^14.1.0",
+    "nuxt": "^4.4.2",
+    "scule": "^1.3.0",
+    "tailwindcss": "^4.2.1",
+    "vue": "^3.5.30",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "^1.15.2",
+    "eslint": "^10.0.3",
+    "typescript": "^5.9.3",
+    "vue-tsc": "^3.2.5"
+  },
+  "packageManager": "npm@10.8.2"
+}
