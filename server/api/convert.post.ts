@@ -2,11 +2,22 @@ import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 
+type ConversionMessage = {
+    code: string
+    message: string
+    recoverable?: boolean
+    suggestion?: string | null
+    details?: Record<string, unknown> | null
+}
+
 type ConvertResponse = {
     success: boolean
     mode: 'local' | 'remote'
     scope: 'all' | 'source'
     source: string | null
+    recoverable: boolean
+    warnings: ConversionMessage[]
+    diagnostics: ConversionMessage[]
     startedAt: string
     endedAt: string
     durationMs: number
@@ -49,7 +60,27 @@ async function pathExists(targetPath: string): Promise<boolean> {
     }
 }
 
-async function runLocalConversion(ingestWorkdir: string, timeoutMs: number): Promise<{
+function localDiagnostics(stdout: string, stderr: string): { recoverable: boolean, diagnostics: ConversionMessage[] } {
+    const output = `${stdout}\n${stderr}`
+    if (
+        output.includes('embedded image media that the converter cannot read')
+        || output.includes("'Part' object has no attribute 'image'")
+    ) {
+        return {
+            recoverable: true,
+            diagnostics: [{
+                code: 'unsupported_pptx_media',
+                message: 'This PowerPoint contains embedded image media that the converter cannot read.',
+                recoverable: true,
+                suggestion: 'Retry with sanitization to skip unsupported images in a temporary conversion copy.'
+            }]
+        }
+    }
+
+    return { recoverable: false, diagnostics: [] }
+}
+
+async function runLocalConversion(ingestWorkdir: string, timeoutMs: number, source: string | null, sanitize: boolean): Promise<{
     exitCode: number
     stdout: string
     stderr: string
@@ -64,7 +95,11 @@ async function runLocalConversion(ingestWorkdir: string, timeoutMs: number): Pro
     }
 
     return await new Promise((resolve, reject) => {
-        const child = spawn('uv', ['run', 'ai-ingest'], {
+        const args = source ? ['run', 'ai-ingest', '--source', source] : ['run', 'ai-ingest']
+        if (sanitize) {
+            args.push('--sanitize')
+        }
+        const child = spawn('uv', args, {
             cwd: ingestPath,
             env: process.env
         })
@@ -129,10 +164,11 @@ export default defineEventHandler(async (event): Promise<ConvertResponse> => {
 
     try {
         const config = useRuntimeConfig()
-        const body = await readBody<{ source?: string }>(event)
+        const body = await readBody<{ source?: string, sanitize?: boolean }>(event)
         const source = typeof body?.source === 'string' && body.source.trim().length > 0
             ? normalizeRelativePath(body.source)
             : null
+        const sanitize = body?.sanitize === true
 
         const startedAt = new Date()
         const timeoutValue = Number.parseInt(
@@ -148,6 +184,9 @@ export default defineEventHandler(async (event): Promise<ConvertResponse> => {
             stderr: string
             truncated: { stdout: boolean; stderr: boolean }
         }
+        let recoverable = false
+        let warnings: ConversionMessage[] = []
+        let diagnostics: ConversionMessage[] = []
         let mode: 'local' | 'remote' = 'local'
 
         if (ingestApiUrl) {
@@ -157,10 +196,14 @@ export default defineEventHandler(async (event): Promise<ConvertResponse> => {
                 exitCode?: number
                 stdout?: string
                 stderr?: string
+                recoverable?: boolean
+                warnings?: ConversionMessage[]
+                diagnostics?: ConversionMessage[]
             }>(`${ingestApiUrl.replace(/\/$/, '')}/convert`, {
                 method: 'POST',
                 body: {
-                    source
+                    source,
+                    sanitize
                 }
             })
 
@@ -173,9 +216,24 @@ export default defineEventHandler(async (event): Promise<ConvertResponse> => {
                     stderr: false
                 }
             }
+            recoverable = remoteResult.recoverable ?? false
+            warnings = remoteResult.warnings || []
+            diagnostics = remoteResult.diagnostics || []
         } else {
             const ingestWorkdir = (process.env.SKP_INGEST_WORKDIR || config.skpIngestWorkdir || '../ai-doc-ingest') as string
-            result = await runLocalConversion(ingestWorkdir, timeoutMs)
+            result = await runLocalConversion(ingestWorkdir, timeoutMs, source, sanitize)
+            if (result.exitCode !== 0) {
+                const localResult = localDiagnostics(result.stdout, result.stderr)
+                recoverable = localResult.recoverable
+                diagnostics = localResult.diagnostics
+            } else if (sanitize && result.stdout.includes('WARNING unsupported_pptx_media_skipped')) {
+                warnings = [{
+                    code: 'unsupported_pptx_media_skipped',
+                    message: 'Skipped unsupported image object(s) from a temporary conversion copy. The original file was not modified.',
+                    recoverable: false,
+                    details: { originalModified: false }
+                }]
+            }
         }
 
         const endedAt = new Date()
@@ -185,6 +243,9 @@ export default defineEventHandler(async (event): Promise<ConvertResponse> => {
             mode,
             scope: source ? 'source' : 'all',
             source,
+            recoverable,
+            warnings,
+            diagnostics,
             startedAt: startedAt.toISOString(),
             endedAt: endedAt.toISOString(),
             durationMs: endedAt.getTime() - startedAt.getTime(),

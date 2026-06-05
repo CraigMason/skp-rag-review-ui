@@ -31,11 +31,22 @@ type TablePayload = {
     truncated: boolean
 }
 
+type ConversionMessage = {
+    code: string
+    message: string
+    recoverable?: boolean
+    suggestion?: string | null
+    details?: Record<string, unknown> | null
+}
+
 type ConvertResponse = {
     success: boolean
     mode: 'local' | 'remote'
     scope: 'all' | 'source'
     source: string | null
+    recoverable: boolean
+    warnings: ConversionMessage[]
+    diagnostics: ConversionMessage[]
     startedAt: string
     endedAt: string
     durationMs: number
@@ -65,6 +76,40 @@ const selectedTablePath = ref<string | null>(null)
 const tableData = ref<TablePayload | null>(null)
 const tablePending = ref(false)
 const tableErrorMessage = ref<string | null>(null)
+
+const lastProcessTitle = computed(() => {
+    if (!lastProcessResult.value) {
+        return ''
+    }
+
+    if (lastProcessResult.value.success && lastProcessResult.value.warnings.length > 0) {
+        return 'Last process run succeeded with warnings'
+    }
+
+    return lastProcessResult.value.success ? 'Last process run succeeded' : 'Last process run failed'
+})
+
+const lastProcessColor = computed(() => {
+    if (!lastProcessResult.value) {
+        return 'neutral'
+    }
+
+    if (lastProcessResult.value.success && lastProcessResult.value.warnings.length > 0) {
+        return 'warning'
+    }
+
+    return lastProcessResult.value.success ? 'success' : 'error'
+})
+
+const lastProcessMessages = computed(() => {
+    if (!lastProcessResult.value) {
+        return []
+    }
+
+    return lastProcessResult.value.success
+        ? lastProcessResult.value.warnings
+        : lastProcessResult.value.diagnostics
+})
 
 const metadataEntries = computed(() => {
     const metadata = documentData.value?.metadata || {}
@@ -198,7 +243,7 @@ async function deleteSelectedFile(): Promise<void> {
     }
 }
 
-async function processSelectedFile(): Promise<void> {
+async function processSelectedFile(sanitize = false): Promise<void> {
     if (!selectedSourcePath.value || processing.value) {
         return
     }
@@ -209,25 +254,28 @@ async function processSelectedFile(): Promise<void> {
         const result = await $fetch<ConvertResponse>('/api/convert', {
             method: 'POST',
             body: {
-                source: selectedSourcePath.value
+                source: selectedSourcePath.value,
+                sanitize
             }
         })
 
         lastProcessResult.value = result
 
         if (result.success) {
+            const warningMessage = result.warnings[0]?.message
             toast.add({
-                title: 'Processing complete',
-                description: `Finished in ${(result.durationMs / 1000).toFixed(1)}s`,
-                color: 'success'
+                title: result.warnings.length > 0 ? 'Processing complete with warnings' : 'Processing complete',
+                description: warningMessage || `Finished in ${(result.durationMs / 1000).toFixed(1)}s`,
+                color: result.warnings.length > 0 ? 'warning' : 'success'
             })
 
             treeRefreshNonce.value += 1
             await loadDocument()
         } else {
+            const diagnostic = result.diagnostics[0]
             toast.add({
                 title: 'Processing failed',
-                description: result.stderr || 'The pipeline exited with an error.',
+                description: diagnostic?.suggestion || diagnostic?.message || result.stderr || 'The pipeline exited with an error.',
                 color: 'error'
             })
         }
@@ -259,7 +307,7 @@ async function processSelectedFile(): Promise<void> {
                         icon="i-lucide-play"
                         :loading="processing"
                         :disabled="!selectedSourcePath || deletingFile"
-                        @click="processSelectedFile"
+                        @click="processSelectedFile()"
                     />
                     <UModal
                         v-model:open="deleteModalOpen"
@@ -317,11 +365,37 @@ async function processSelectedFile(): Promise<void> {
             <div v-else class="space-y-4">
                 <UAlert
                     v-if="lastProcessResult"
-                    :color="lastProcessResult.success ? 'success' : 'error'"
+                    :color="lastProcessColor"
                     variant="subtle"
-                    :title="lastProcessResult.success ? 'Last process run succeeded' : 'Last process run failed'"
+                    :title="lastProcessTitle"
                     :description="`Mode: ${lastProcessResult.mode}. Duration: ${(lastProcessResult.durationMs / 1000).toFixed(1)}s. Exit code: ${lastProcessResult.exitCode}.`"
-                />
+                >
+                    <template v-if="lastProcessMessages.length > 0 || lastProcessResult.recoverable" #description>
+                        <div class="space-y-3">
+                            <p>
+                                Mode: {{ lastProcessResult.mode }}. Duration: {{ (lastProcessResult.durationMs / 1000).toFixed(1) }}s. Exit code: {{ lastProcessResult.exitCode }}.
+                            </p>
+                            <div v-for="message in lastProcessMessages" :key="message.code" class="space-y-1">
+                                <p class="font-medium">
+                                    {{ message.message }}
+                                </p>
+                                <p v-if="message.suggestion" class="text-sm">
+                                    {{ message.suggestion }}
+                                </p>
+                            </div>
+                            <UButton
+                                v-if="lastProcessResult.recoverable"
+                                label="Retry with sanitization"
+                                color="warning"
+                                variant="soft"
+                                size="sm"
+                                icon="i-lucide-wand-sparkles"
+                                :loading="processing"
+                                @click="processSelectedFile(true)"
+                            />
+                        </div>
+                    </template>
+                </UAlert>
 
                 <UCard>
                     <template #header>
